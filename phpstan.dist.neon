@@ -1,0 +1,18 @@
+parameters:
+    level: max
+    paths:
+        - src
+        - tests
+    excludePaths:
+        - tests/Stub/swoole_http_stubs.php
+    scanFiles:
+        # Swoole\Http\Request/Response come from the test stubs (they carry the
+        # extra recording properties the tests assert on; with ext-swoole the
+        # real classes are a superset of what the bundle calls). The remaining
+        # ext-swoole symbols (Server, Timer, functions) come from the official
+        # ide-helper stubs.
+        - tests/Stub/swoole_http_stubs.php
+        - vendor/swoole/ide-helper/src/swoole/Swoole/Server.php
+        - vendor/swoole/ide-helper/src/swoole/Swoole/Http/Server.php
+        - vendor/swoole/ide-helper/src/swoole/Swoole/Timer.php
+        - vendor/swoole/ide-helper/src/swoole/functions.php

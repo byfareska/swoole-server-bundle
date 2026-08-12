@@ -1,0 +1,8 @@
+byfareska_swoole_server:
+    dsn: '%env(SWOOLE_SERVER_DSN)%'
+    # health_check_path: /healthz
+    # hot_reload:
+    #     watch_dirs:
+    #         - '%kernel.project_dir%/src'
+    #         - '%kernel.project_dir%/config'
+    #         - '%kernel.project_dir%/templates'

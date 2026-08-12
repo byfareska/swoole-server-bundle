@@ -1,0 +1,11 @@
+{
+    "bundles": {
+        "Byfareska\\SwooleServer\\SwooleServerBundle": ["all"]
+    },
+    "copy-from-recipe": {
+        "config/": "%CONFIG_DIR%/"
+    },
+    "env": {
+        "SWOOLE_SERVER_DSN": "swoole://0.0.0.0:8000?workers=0"
+    }
+}
