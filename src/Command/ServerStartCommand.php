@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Byfareska\SwooleServer\Command;
 
 use Byfareska\SwooleServer\HotReload\HotReloadWatcher;
+use Byfareska\SwooleServer\Metrics\ServerMetrics;
 use Byfareska\SwooleServer\Runtime\SwooleRequestHandler;
 use Byfareska\SwooleServer\Runtime\WorkerKernelFactoryInterface;
 use Byfareska\SwooleServer\Server\ServerDsn;
@@ -39,6 +40,8 @@ final class ServerStartCommand extends Command
         private readonly ?bool $hotReloadEnabled,
         private readonly ?string $healthCheckPath,
         private readonly bool $debug,
+        // null = metrics disabled (config metrics.enabled)
+        private readonly ?ServerMetrics $metrics = null,
     ) {
         parent::__construct();
     }
@@ -82,32 +85,52 @@ final class ServerStartCommand extends Command
             'log_level' => SWOOLE_LOG_INFO,
             // Query parameters from the DSN override the defaults above.
             ...$dsn->settings,
-            'worker_num' => $dsn->workers > 0 ? $dsn->workers : swoole_cpu_num(),
+            'worker_num' => $workerNum = $dsn->workers > 0 ? $dsn->workers : swoole_cpu_num(),
         ]);
+
+        // Shared memory for the metrics table must exist before the fork.
+        $this->metrics?->prepare($workerNum);
 
         // Per-worker handler (each worker = separate process after fork → own kernel).
         $kernel = null;
 
-        $server->on('workerStart', function () use (&$kernel): void {
+        $server->on('workerStart', function (Server $server, int $workerId) use (&$kernel): void {
             $kernel = $this->kernelFactory->create();
+            $this->metrics?->onWorkerStart($server, $workerId);
         });
 
         // Clean per-worker teardown (flushes logs, closes connections) on worker
         // recycling and server stop.
-        $server->on('workerStop', static function () use (&$kernel): void {
+        // Graceful exit (reload, shutdown): a worker leaves only once its event
+        // loop is empty, so pending timers must be cleared here — otherwise
+        // Swoole waits max_wait_time and force-kills the worker (ERRNO 9101).
+        $server->on('workerExit', function (): void {
+            $this->metrics?->onWorkerExit();
+        });
+
+        $server->on('workerStop', function () use (&$kernel): void {
+            $this->metrics?->onWorkerExit();
             if ($kernel instanceof KernelInterface) {
                 $kernel->shutdown();
                 $kernel = null;
             }
         });
 
-        $server->on('request', function (\Swoole\Http\Request $req, \Swoole\Http\Response $res) use (&$kernel): void {
+        $server->on('request', function (\Swoole\Http\Request $req, \Swoole\Http\Response $res) use (&$kernel, $server): void {
             // Health check answered before the kernel gate: it reports liveness of
             // the server process, so it responds 200 even while a worker is booting.
             if (null !== $this->healthCheckPath && $this->healthCheckPath === ($req->server['request_uri'] ?? '')) {
                 $res->status(200);
                 $res->header('Content-Type', 'text/plain');
                 $res->end('ok');
+
+                return;
+            }
+
+            // Metrics are served before the kernel gate for the same reason —
+            // and so they keep reporting when the kernel itself is the problem.
+            if (null !== $this->metrics && $this->metrics->handles($req)) {
+                $this->metrics->respond($server, $res);
 
                 return;
             }
