@@ -14,6 +14,11 @@ use Byfareska\SwooleServer\ErrorHandler\ExceptionResponseFactory;
 use Byfareska\SwooleServer\ErrorHandler\ExceptionResponseFactoryInterface;
 use Byfareska\SwooleServer\HotReload\DirectoryFingerprint;
 use Byfareska\SwooleServer\HotReload\HotReloadWatcher;
+use Byfareska\SwooleServer\Metrics\ProcessMemoryReader;
+use Byfareska\SwooleServer\Metrics\PrometheusTextRenderer;
+use Byfareska\SwooleServer\Metrics\ServerMetrics;
+use Byfareska\SwooleServer\Metrics\WorkerMetricsTable;
+use Byfareska\SwooleServer\Metrics\WorkerSampler;
 use Byfareska\SwooleServer\Profiler\ExceptionProfileCollector;
 use Byfareska\SwooleServer\Reset\FormDataCollectorResetter;
 use Byfareska\SwooleServer\Reset\SymfonyServicesResetter;
@@ -118,6 +123,32 @@ return static function (ContainerConfigurator $container): void {
         ])
         ->tag('monolog.logger', ['channel' => 'swoole_server']);
 
+    // Server-level Prometheus metrics (config "metrics"). One shared table
+    // instance: the sampler writes to it in every worker, ServerMetrics reads
+    // it in the worker serving the scrape.
+    $services->set(WorkerMetricsTable::class);
+
+    $services->set(ProcessMemoryReader::class);
+
+    $services->set(WorkerSampler::class)
+        ->args([
+            service(WorkerMetricsTable::class),
+            service(ProcessMemoryReader::class),
+            abstract_arg('sample interval (config metrics.sample_interval)'),
+        ]);
+
+    $services->set(PrometheusTextRenderer::class)
+        ->args([abstract_arg('metric namespace (config metrics.namespace)')]);
+
+    $services->set(ServerMetrics::class)
+        ->args([
+            service(WorkerMetricsTable::class),
+            service(WorkerSampler::class),
+            service(ProcessMemoryReader::class),
+            service(PrometheusTextRenderer::class),
+            abstract_arg('metrics path (config metrics.path)'),
+        ]);
+
     $services->set(ServerStartCommand::class)
         ->args([
             service(WorkerKernelFactoryInterface::class),
@@ -127,6 +158,7 @@ return static function (ContainerConfigurator $container): void {
             abstract_arg('hot reload enabled (config hot_reload.enabled)'),
             abstract_arg('health check path (config health_check_path)'),
             param('kernel.debug'),
+            abstract_arg('metrics (config metrics.enabled → ServerMetrics or null)'),
         ])
         ->tag('console.command');
 };

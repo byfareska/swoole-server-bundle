@@ -6,3 +6,6 @@ byfareska_swoole_server:
     #         - '%kernel.project_dir%/src'
     #         - '%kernel.project_dir%/config'
     #         - '%kernel.project_dir%/templates'
+    # metrics:
+    #     enabled: true          # Prometheus text endpoint answered before the kernel
+    #     path: /metrics

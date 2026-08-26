@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.0] - 2026-08-26
+
+### Added
+
+- Optional Prometheus metrics endpoint (`metrics.enabled`, default off),
+  answered before the kernel like the health check: per-worker resident
+  memory (`/proc` VmRSS/VmHWM) and PHP allocator memory, per-worker request
+  and restart counters, master/manager RSS, server-wide connection/worker
+  stats and `memory_limit`. Workers sample themselves into a shared
+  `Swoole\Table`; any worker renders the scrape. Configurable `path`,
+  `sample_interval` and metric `namespace`.
+
 ## [0.0.1] - 2026-08-12
 
 ### Added

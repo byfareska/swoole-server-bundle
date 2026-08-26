@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Byfareska\SwooleServer\Tests\Integration;
 
 use Byfareska\SwooleServer\Command\ServerStartCommand;
+use Byfareska\SwooleServer\Metrics\ServerMetrics;
 use Byfareska\SwooleServer\SwooleServerBundle;
 use PHPUnit\Framework\TestCase;
 use Symfony\Bundle\FrameworkBundle\FrameworkBundle;
@@ -47,6 +48,10 @@ final class BundleWiringTest extends TestCase
         $command = $container->get(ServerStartCommand::class);
         self::assertInstanceOf(ServerStartCommand::class, $command);
         self::assertSame('byfareska:swoole:server:start', $command->getName());
+
+        // metrics.enabled → the ServerMetrics service is wired (it is private,
+        // so it is reachable only through the test container).
+        self::assertInstanceOf(ServerMetrics::class, $container->get(ServerMetrics::class));
     }
 
     private static function removeDirectory(string $dir): void
@@ -91,6 +96,7 @@ final class WiringTestKernel extends Kernel
             $container->loadFromExtension('byfareska_swoole_server', [
                 'dsn' => 'swoole://127.0.0.1:9501?workers=2',
                 'health_check_path' => '/healthz',
+                'metrics' => ['enabled' => true, 'path' => '/metrics', 'namespace' => 'test_app'],
             ]);
         });
     }

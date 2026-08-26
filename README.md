@@ -46,6 +46,11 @@ byfareska_swoole_server:
     # optional:
     # kernel_class: App\Kernel   # null = the application kernel class (detected automatically)
     # health_check_path: /healthz # plain-text 200 "ok" answered before the kernel; null = disabled
+    # metrics:
+    #     enabled: true          # Prometheus text endpoint answered before the kernel (default: false)
+    #     path: /metrics
+    #     sample_interval: 5000  # ms between a worker's self-samples
+    #     namespace: swoole      # metric name prefix
     hot_reload:
         # enabled: null          # null = enabled only when kernel.debug
         watch_dirs:
@@ -99,6 +104,66 @@ for docker/k8s health checks:
 healthcheck:
     test: ["CMD", "curl", "-fs", "http://localhost:8000/healthz"]
 ```
+
+## Metrics (Prometheus)
+
+Long-running workers never get recycled (`max_request=0`), so a slow leak
+grows silently until the OOM killer restarts the process — and with N
+workers you cannot tell "one worker leaks" from "all of them grow" without
+per-process numbers. Enable `metrics` to get a Prometheus text endpoint
+answered directly by the server, before the kernel (like the health check):
+
+```yaml
+byfareska_swoole_server:
+    metrics:
+        enabled: true
+```
+
+```
+# HELP swoole_worker_memory_rss_bytes Resident set size (VmRSS) of the worker process.
+# TYPE swoole_worker_memory_rss_bytes gauge
+swoole_worker_memory_rss_bytes{worker_id="0"} 73400320
+swoole_worker_memory_rss_bytes{worker_id="1"} 71303168
+...
+```
+
+How it works: every worker samples itself every `sample_interval` ms into a
+`Swoole\Table` (shared memory allocated by the master before the fork — no
+IPC), and whichever worker receives the scrape renders the whole table plus
+the server-wide counters. A worker that stops updating its row is stuck or
+dead — its `last_sample_timestamp` goes stale. The table outlives worker
+processes, which is what makes `worker_restarts_total` possible: a worker id
+whose row already exists on `workerStart` was re-forked (OOM kill, fatal
+error, recycling).
+
+| metric | labels | source |
+| --- | --- | --- |
+| `<ns>_worker_memory_rss_bytes` / `_hwm_bytes` | `worker_id` | `/proc/<pid>/status` VmRSS / VmHWM (Linux only — omitted elsewhere) |
+| `<ns>_worker_php_memory_bytes` / `_peak_bytes` | `worker_id` | `memory_get_usage(true)` / `memory_get_peak_usage(true)` |
+| `<ns>_worker_requests_total` | `worker_id` | `stats()['worker_request_count']` |
+| `<ns>_worker_restarts_total` | `worker_id` | re-forks of this worker id since server start |
+| `<ns>_worker_start_time_seconds`, `<ns>_worker_last_sample_timestamp_seconds` | `worker_id` | worker clock |
+| `<ns>_process_memory_rss_bytes` | `process=master\|manager` | `/proc` |
+| `<ns>_server_connections`, `_workers`, `_idle_workers`, `_requests_total`, `_accepted_total`, `_coroutines`, `_start_time_seconds` | — | `Swoole\Server::stats()` |
+| `<ns>_php_memory_limit_bytes` | — | `ini_get('memory_limit')` (omitted when `-1`) |
+
+Label cardinality is fixed (`worker_id` ∈ 0..N-1), so the series count does
+not grow with traffic. The endpoint has **no authentication**: expose the
+server port to your monitoring network only and do not route the path through
+the public reverse proxy. Scrape example:
+
+```yaml
+scrape_configs:
+    - job_name: app
+      dns_sd_configs:
+          - names: [app]     # one A record per replica
+            type: A
+            port: 8000
+```
+
+Useful alerts: `worker_memory_rss_bytes / php_memory_limit_bytes > 0.7`,
+`increase(worker_restarts_total[15m]) > 0`,
+`predict_linear(worker_memory_rss_bytes[2h], 6*3600) > php_memory_limit_bytes`.
 
 ## Behind a reverse proxy (trusted proxies)
 
@@ -295,6 +360,11 @@ services:
 | `Reset\SymfonyServicesResetter` | `services_resetter` bridge (the equivalent of `$kernel->reset()`) |
 | `Reset\FormDataCollectorResetter` | workaround for the FormDataCollector leak (debug) |
 | `HotReload\HotReloadWatcher` | mtime polling + server stop on change |
+| `Metrics\ServerMetrics` | `/metrics` endpoint: table allocation before the fork, worker hooks, scrape response |
+| `Metrics\WorkerSampler` | per-worker timer writing the worker's own row (RSS, PHP memory, requests, restarts) |
+| `Metrics\WorkerMetricsTable` | `Swoole\Table` wrapper — one shared-memory row per worker id |
+| `Metrics\ProcessMemoryReader` | VmRSS/VmHWM from `/proc/<pid>/status` |
+| `Metrics\PrometheusTextRenderer` | snapshot → Prometheus text exposition (no client library) |
 | `HotReload\DirectoryFingerprint` | mtime+file-count fingerprint of the watched dirs |
 
 ## License

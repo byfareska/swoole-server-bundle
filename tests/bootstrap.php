@@ -21,3 +21,4 @@ foreach ([
 }
 
 require_once __DIR__ . '/Stub/swoole_http_stubs.php';
+require_once __DIR__ . '/Stub/swoole_table_stub.php';

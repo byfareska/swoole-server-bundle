@@ -7,11 +7,15 @@ namespace Byfareska\SwooleServer;
 use Byfareska\SwooleServer\Bridge\Body\ResponseBodyEmitterInterface;
 use Byfareska\SwooleServer\Command\ServerStartCommand;
 use Byfareska\SwooleServer\HotReload\HotReloadWatcher;
+use Byfareska\SwooleServer\Metrics\PrometheusTextRenderer;
+use Byfareska\SwooleServer\Metrics\ServerMetrics;
+use Byfareska\SwooleServer\Metrics\WorkerSampler;
 use Byfareska\SwooleServer\Reset\WorkerResetterInterface;
 use Byfareska\SwooleServer\Runtime\WorkerKernelFactory;
 use Symfony\Component\Config\Definition\Configurator\DefinitionConfigurator;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
+use Symfony\Component\DependencyInjection\Reference;
 use Symfony\Component\HttpKernel\Bundle\AbstractBundle;
 
 final class SwooleServerBundle extends AbstractBundle
@@ -69,6 +73,41 @@ final class SwooleServerBundle extends AbstractBundle
                         ->end()
                     ->end()
                 ->end()
+                ->arrayNode('metrics')
+                    ->addDefaultsIfNotSet()
+                    ->info(
+                        'Prometheus text endpoint answered before the kernel: per-worker RSS/PHP memory, '
+                        . 'request and restart counters, server-wide connection/worker stats. No authentication — '
+                        . 'expose the server port to the monitoring network only.'
+                    )
+                    ->children()
+                        ->booleanNode('enabled')
+                            ->defaultFalse()
+                        ->end()
+                        ->scalarNode('path')
+                            ->cannotBeEmpty()
+                            ->defaultValue('/metrics')
+                            ->validate()
+                                ->ifTrue(static fn (mixed $v): bool => !\is_string($v) || !str_starts_with($v, '/'))
+                                ->thenInvalid('metrics.path must be an absolute path starting with "/", got %s.')
+                            ->end()
+                        ->end()
+                        ->integerNode('sample_interval')
+                            ->min(100)
+                            ->defaultValue(5000)
+                            ->info('How often each worker samples itself, in ms')
+                        ->end()
+                        ->scalarNode('namespace')
+                            ->cannotBeEmpty()
+                            ->defaultValue('swoole')
+                            ->info('Metric name prefix, e.g. "swoole" → swoole_worker_memory_rss_bytes')
+                            ->validate()
+                                ->ifTrue(static fn (mixed $v): bool => !\is_string($v) || 1 !== preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $v))
+                                ->thenInvalid('metrics.namespace must match [a-zA-Z_][a-zA-Z0-9_]*, got %s.')
+                            ->end()
+                        ->end()
+                    ->end()
+                ->end()
             ->end();
     }
 
@@ -78,6 +117,7 @@ final class SwooleServerBundle extends AbstractBundle
      *     kernel_class: ?string,
      *     health_check_path: ?string,
      *     hot_reload: array{enabled: ?bool, watch_dirs: list<string>, interval: int, extensions: list<string>},
+     *     metrics: array{enabled: bool, path: string, sample_interval: int, namespace: string},
      * } $config
      */
     public function loadExtension(array $config, ContainerConfigurator $container, ContainerBuilder $builder): void
@@ -105,6 +145,18 @@ final class SwooleServerBundle extends AbstractBundle
         $builder->getDefinition(ServerStartCommand::class)
             ->replaceArgument(3, $config['dsn'])
             ->replaceArgument(4, $config['hot_reload']['enabled'])
-            ->replaceArgument(5, $config['health_check_path']);
+            ->replaceArgument(5, $config['health_check_path'])
+            // Disabled → null; the unused private metrics services are then
+            // dropped by the container at compile time.
+            ->replaceArgument(7, $config['metrics']['enabled'] ? new Reference(ServerMetrics::class) : null);
+
+        $builder->getDefinition(WorkerSampler::class)
+            ->replaceArgument(2, $config['metrics']['sample_interval']);
+
+        $builder->getDefinition(PrometheusTextRenderer::class)
+            ->replaceArgument(0, $config['metrics']['namespace']);
+
+        $builder->getDefinition(ServerMetrics::class)
+            ->replaceArgument(4, $config['metrics']['path']);
     }
 }
