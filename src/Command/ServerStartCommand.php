@@ -94,7 +94,15 @@ final class ServerStartCommand extends Command
         // Per-worker handler (each worker = separate process after fork → own kernel).
         $kernel = null;
 
-        $server->on('workerStart', function (Server $server, int $workerId) use (&$kernel): void {
+        $server->on('workerStart', function (Server $server, int $workerId) use (&$kernel, $dsn): void {
+            // Long-running workers inherit the CLI process limit, which is
+            // usually -1 (unlimited) — a leaking worker then grows until the
+            // kernel's OOM killer takes it, silently and possibly along with
+            // other processes. Applied before the kernel boot so it covers the
+            // boot too, and only here: master and manager keep the CLI limit.
+            if (null !== $dsn->workerMemoryLimit) {
+                ini_set('memory_limit', $dsn->workerMemoryLimit);
+            }
             $kernel = $this->kernelFactory->create();
             $this->metrics?->onWorkerStart($server, $workerId);
         });

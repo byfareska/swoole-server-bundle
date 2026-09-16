@@ -72,6 +72,64 @@ final class ServerDsnTest extends TestCase
         self::assertSame(5, $dsn->settings['log_level']);
     }
 
+    public function testWorkerMemoryLimitIsParsedAndKeptOutOfSettings(): void
+    {
+        $dsn = ServerDsn::fromString('swoole://0.0.0.0:8000?workers=2&worker_memory_limit=512M');
+
+        self::assertSame('512M', $dsn->workerMemoryLimit);
+        // It configures php.ini in the worker, so it must never reach $server->set().
+        self::assertSame([], $dsn->settings);
+    }
+
+    public function testWorkerMemoryLimitDefaultsToNull(): void
+    {
+        $dsn = ServerDsn::fromString('swoole://h:1?workers=2');
+
+        self::assertNull($dsn->workerMemoryLimit);
+    }
+
+    #[DataProvider('provideWorkerMemoryLimits')]
+    public function testWorkerMemoryLimitAcceptsIniShorthand(string $value, string $expected): void
+    {
+        $dsn = ServerDsn::fromString('swoole://h:1?worker_memory_limit=' . $value);
+
+        self::assertSame($expected, $dsn->workerMemoryLimit);
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function provideWorkerMemoryLimits(): iterable
+    {
+        yield 'megabytes' => ['512M', '512M'];
+        yield 'gigabytes' => ['2G', '2G'];
+        yield 'kilobytes' => ['1024K', '1024K'];
+        yield 'lowercase suffix' => ['512m', '512m'];
+        yield 'plain bytes' => ['536870912', '536870912'];
+        yield 'unlimited' => ['-1', '-1'];
+    }
+
+    #[DataProvider('provideInvalidWorkerMemoryLimits')]
+    public function testInvalidWorkerMemoryLimitThrows(string $value): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Invalid "worker_memory_limit"');
+
+        ServerDsn::fromString('swoole://h:1?worker_memory_limit=' . $value);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function provideInvalidWorkerMemoryLimits(): iterable
+    {
+        yield 'full unit name' => ['512MB'];
+        yield 'not a size' => ['abc'];
+        yield 'fractional' => ['1.5G'];
+        yield 'negative other than -1' => ['-2'];
+        yield 'empty' => [''];
+    }
+
     public function testWorkerNumParameterIsRejectedWithAHint(): void
     {
         $this->expectException(\InvalidArgumentException::class);

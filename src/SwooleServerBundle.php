@@ -32,8 +32,10 @@ final class SwooleServerBundle extends AbstractBundle
                     ->defaultValue('swoole://0.0.0.0:8000')
                     ->info(
                         'Server DSN: swoole://host:port?workers=4&package_max_length=67108864&log_level=info. '
-                        . 'The "workers" parameter controls the number of workers (0 = swoole_cpu_num()), the '
-                        . 'remaining query parameters go 1:1 to Swoole $server->set(). Usually: "%env(SWOOLE_SERVER_DSN)%".'
+                        . 'The "workers" parameter controls the number of workers (0 = swoole_cpu_num()) and '
+                        . '"worker_memory_limit" sets the PHP memory_limit inside every worker (e.g. "512M", '
+                        . '-1 = unlimited); the remaining query parameters go 1:1 to Swoole $server->set(). '
+                        . 'Usually: "%env(SWOOLE_SERVER_DSN)%".'
                     )
                 ->end()
                 ->scalarNode('kernel_class')
