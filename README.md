@@ -69,6 +69,10 @@ swoole://HOST:PORT?workers=N&<any_swoole_options>
 
 - `workers` — number of workers; `0` or absent = `swoole_cpu_num()`
   (`worker_num` is rejected with a hint — use `workers`)
+- `worker_memory_limit` — PHP `memory_limit` applied in every worker process
+  (`512M`, `2G`, `536870912`, `-1` = unlimited); absent = whatever the
+  `bin/console` process has, which in the CLI SAPI is usually `-1`. See
+  [Worker memory limit](#worker-memory-limit) below.
 - **every other query parameter** goes 1:1 to `$server->set()` — e.g.
   `package_max_length=134217728`, `log_level=warning` (level names are mapped
   to the `SWOOLE_LOG_*` constants), `http_compression=true`
@@ -84,6 +88,28 @@ Default server settings (overridable via the DSN):
 | `package_max_length` | 64 MB | the upload limit is enforced by Swoole, not PHP ini |
 | `output_buffer_size` | 64 MB | Swoole's own default (2 MB) aborts larger buffered responses with a warning |
 | `log_level` | `SWOOLE_LOG_INFO` | — |
+
+### Worker memory limit
+
+Workers are never recycled (`max_request=0`) and inherit the CLI process'
+`memory_limit`, which is normally `-1` — so a leaking worker grows until the
+kernel's OOM killer takes it: no application log entry, and possibly other
+processes killed along with it. `worker_memory_limit` puts a ceiling on that:
+
+```dotenv
+SWOOLE_SERVER_DSN=swoole://0.0.0.0:8000?workers=4&worker_memory_limit=512M
+```
+
+- applied with `ini_set()` in the `workerStart` callback, before the worker
+  boots its kernel — so the boot itself is covered too
+- workers only; the master and manager processes keep the CLI limit
+- it is a **hard** backstop, not graceful recycling: crossing it is a PHP fatal
+  error, so the in-flight request dies (the client gets no response) and the
+  manager forks a replacement worker. Size it above your real peak — it should
+  catch a leak, not ordinary traffic.
+- with `metrics` enabled the limit shows up as `php_memory_limit_bytes` and the
+  replacements are counted by `worker_restarts_total`, which makes the
+  `worker_memory_rss_bytes / php_memory_limit_bytes` alert below meaningful
 
 ## Usage
 
@@ -340,7 +366,7 @@ services:
 | class | responsibility |
 | --- | --- |
 | `Command\ServerStartCommand` | Swoole server configuration and startup |
-| `Server\ServerDsn` | DSN parsing (host, port, workers, Swoole options) |
+| `Server\ServerDsn` | DSN parsing (host, port, workers, worker memory limit, Swoole options) |
 | `Runtime\WorkerKernelFactoryInterface` | extension point: per-worker kernel boot |
 | `Runtime\WorkerKernelFactory` | default implementation: fresh kernel per worker (after fork) |
 | `Runtime\SwooleRequestHandler` | full request→kernel→response cycle + reset |

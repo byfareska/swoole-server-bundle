@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-09-16
+
+### Added
+
+- `worker_memory_limit` DSN parameter: PHP `memory_limit` applied with
+  `ini_set()` in every worker process before its kernel boots (php.ini
+  shorthand, `-1` = unlimited). Workers otherwise inherit the CLI process'
+  usually unlimited value, so a leak ends in an OOM kill; this turns it into a
+  contained PHP fatal and a worker replaced by the manager.
+
 ## [0.1.0] - 2026-08-26
 
 ### Added

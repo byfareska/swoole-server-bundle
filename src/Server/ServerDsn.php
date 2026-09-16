@@ -4,14 +4,18 @@ declare(strict_types=1);
 
 namespace Byfareska\SwooleServer\Server;
 
+use Byfareska\SwooleServer\Metrics\IniBytes;
+
 /**
  * Server configuration from a single DSN (usually the SWOOLE_SERVER_DSN env var):
  *
  *     swoole://0.0.0.0:8000?workers=4&package_max_length=67108864&log_level=info
  *
- * The "workers" parameter is interpreted by the bundle (0 = swoole_cpu_num()),
- * all remaining query parameters are passed 1:1 to Swoole's $server->set() —
- * so any Swoole option can be configured without code changes.
+ * Two parameters are interpreted by the bundle itself: "workers" (0 =
+ * swoole_cpu_num()) and "worker_memory_limit" (php.ini memory_limit applied in
+ * every worker process). All remaining query parameters are passed 1:1 to
+ * Swoole's $server->set() — so any Swoole option can be configured without
+ * code changes.
  */
 final readonly class ServerDsn
 {
@@ -23,6 +27,8 @@ final readonly class ServerDsn
         public int $port,
         public int $workers,
         public array $settings = [],
+        /** php.ini shorthand ("512M", "-1", "536870912"); null = inherit the CLI process limit. */
+        public ?string $workerMemoryLimit = null,
     ) {
     }
 
@@ -48,6 +54,9 @@ final readonly class ServerDsn
         $workers = (int) ($query['workers'] ?? 0);
         unset($query['workers']);
 
+        $workerMemoryLimit = self::extractWorkerMemoryLimit($query, $dsn);
+        unset($query['worker_memory_limit']);
+
         $settings = [];
         foreach ($query as $key => $value) {
             if (!\is_string($value)) {
@@ -56,7 +65,29 @@ final readonly class ServerDsn
             $settings[(string) $key] = self::castSetting((string) $key, $value);
         }
 
-        return new self($parts['host'], $parts['port'] ?? 8000, $workers, $settings);
+        return new self($parts['host'], $parts['port'] ?? 8000, $workers, $settings, $workerMemoryLimit);
+    }
+
+    /**
+     * Kept as the original string: that is exactly what ini_set() expects, and
+     * normalising to bytes would lose the "-1" (unlimited) case.
+     *
+     * @param array<array-key, mixed> $query
+     */
+    private static function extractWorkerMemoryLimit(array $query, string $dsn): ?string
+    {
+        $value = $query['worker_memory_limit'] ?? null;
+        if (null === $value) {
+            return null;
+        }
+
+        // "-1" means unlimited — IniBytes::parse() returns null for it just like
+        // for garbage, so it has to be allowed before the format check.
+        if (\is_string($value) && ('-1' === trim($value) || null !== IniBytes::parse($value))) {
+            return trim($value);
+        }
+
+        throw new \InvalidArgumentException(\sprintf('Invalid "worker_memory_limit" in DSN "%s" — expected a php.ini memory_limit value such as "512M", "2G", "536870912" or "-1" (unlimited).', $dsn));
     }
 
     /**
