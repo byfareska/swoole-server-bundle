@@ -14,7 +14,7 @@ use Symfony\Component\Console\Output\OutputInterface;
  * the host).
  *
  * Registers a tick in the master process that scans the project files and on
- * any change DELIBERATELY stops the whole server ($server->stop()) — a fresh
+ * any change DELIBERATELY stops the whole server ($server->shutdown()) — a fresh
  * process is brought up by docker's/supervisor's restart policy, so the code
  * is guaranteed to come up new.
  *
@@ -26,7 +26,7 @@ use Symfony\Component\Console\Output\OutputInterface;
  *   definitions into the master's memory via reflection, and the fork inherits
  *   them — requiring a fresh file is then a no-op and class edits never take
  *   effect.
- * The cost of stop() is dropping active connections (including SSE) —
+ * The cost of shutdown() is dropping active connections (including SSE) —
  * acceptable, because hot-reload runs exclusively in debug (dev).
  */
 final readonly class HotReloadWatcher
@@ -53,14 +53,20 @@ final readonly class HotReloadWatcher
     {
         $server->on('start', function (Server $server) use ($output): void {
             $last = $this->fingerprint->compute($this->watchDirs, $this->extensions);
-            Timer::tick($this->interval, function () use ($server, $output, &$last): void {
+            Timer::tick($this->interval, function (int $timerId) use ($server, $output, &$last): void {
                 $now = $this->fingerprint->compute($this->watchDirs, $this->extensions);
                 if ($now !== $last) {
                     $last = $now;
                     $output->writeln(
                         '<comment>[hot-reload] file change detected — stopping the server (docker restart policy)</comment>',
                     );
-                    $server->stop();
+                    // A live timer keeps the master's event loop busy — the
+                    // master would outlive its workers and never exit.
+                    Timer::clear($timerId);
+                    // shutdown(), not stop(): stop() without a worker id stops
+                    // the CURRENT worker — called from the master it only logs
+                    // ERRNO 509 in PROCESS mode and the server keeps running.
+                    $server->shutdown();
                 }
             });
         });
