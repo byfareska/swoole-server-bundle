@@ -11,14 +11,29 @@ use Byfareska\SwooleServer\Metrics\IniBytes;
  *
  *     swoole://0.0.0.0:8000?workers=4&package_max_length=67108864&log_level=info
  *
- * Two parameters are interpreted by the bundle itself: "workers" (0 =
- * swoole_cpu_num()) and "worker_memory_limit" (php.ini memory_limit applied in
- * every worker process). All remaining query parameters are passed 1:1 to
- * Swoole's $server->set() — so any Swoole option can be configured without
- * code changes.
+ * Three parameters are interpreted by the bundle itself: "workers" (0 =
+ * swoole_cpu_num()), "worker_memory_limit" (php.ini memory_limit applied in
+ * every worker process) and "mode" ("process" or "base", the Swoole server
+ * mode). All remaining query parameters are passed 1:1 to Swoole's
+ * $server->set() — so any Swoole option can be configured without code
+ * changes.
  */
 final readonly class ServerDsn
 {
+    /**
+     * Master + reactor threads accept connections and dispatch every request
+     * to a worker (dispatch_mode). The default: with blocking one-request-at-
+     * a-time workers, dispatch_mode=3 sends each request to an idle worker.
+     */
+    public const string MODE_PROCESS = 'process';
+
+    /**
+     * Workers accept connections themselves; a keep-alive connection stays
+     * with the worker that accepted it — a burst of connections can pile up
+     * on one worker while the others idle.
+     */
+    public const string MODE_BASE = 'base';
+
     /**
      * @param array<string, scalar> $settings extra options passed to $server->set()
      */
@@ -29,7 +44,17 @@ final readonly class ServerDsn
         public array $settings = [],
         /** php.ini shorthand ("512M", "-1", "536870912"); null = inherit the CLI process limit. */
         public ?string $workerMemoryLimit = null,
+        /** self::MODE_PROCESS or self::MODE_BASE */
+        public string $mode = self::MODE_PROCESS,
     ) {
+    }
+
+    /**
+     * The SWOOLE_PROCESS / SWOOLE_BASE constant for the Server constructor.
+     */
+    public function swooleMode(): int
+    {
+        return self::MODE_BASE === $this->mode ? SWOOLE_BASE : SWOOLE_PROCESS;
     }
 
     public static function fromString(string $dsn): self
@@ -57,6 +82,9 @@ final readonly class ServerDsn
         $workerMemoryLimit = self::extractWorkerMemoryLimit($query, $dsn);
         unset($query['worker_memory_limit']);
 
+        $mode = self::extractMode($query, $dsn);
+        unset($query['mode']);
+
         $settings = [];
         foreach ($query as $key => $value) {
             if (!\is_string($value)) {
@@ -65,7 +93,7 @@ final readonly class ServerDsn
             $settings[(string) $key] = self::castSetting((string) $key, $value);
         }
 
-        return new self($parts['host'], $parts['port'] ?? 8000, $workers, $settings, $workerMemoryLimit);
+        return new self($parts['host'], $parts['port'] ?? 8000, $workers, $settings, $workerMemoryLimit, $mode);
     }
 
     /**
@@ -88,6 +116,21 @@ final readonly class ServerDsn
         }
 
         throw new \InvalidArgumentException(\sprintf('Invalid "worker_memory_limit" in DSN "%s" — expected a php.ini memory_limit value such as "512M", "2G", "536870912" or "-1" (unlimited).', $dsn));
+    }
+
+    /**
+     * @param array<array-key, mixed> $query
+     */
+    private static function extractMode(array $query, string $dsn): string
+    {
+        $value = $query['mode'] ?? self::MODE_PROCESS;
+        $mode = \is_string($value) ? strtolower(trim($value)) : '';
+
+        if (self::MODE_PROCESS === $mode || self::MODE_BASE === $mode) {
+            return $mode;
+        }
+
+        throw new \InvalidArgumentException(\sprintf('Invalid "mode" in DSN "%s" — expected "process" (default) or "base".', $dsn));
     }
 
     /**

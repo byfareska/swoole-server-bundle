@@ -14,6 +14,8 @@ foreach ([
     'SWOOLE_LOG_WARNING' => 4,
     'SWOOLE_LOG_ERROR' => 5,
     'SWOOLE_LOG_NONE' => 6,
+    'SWOOLE_BASE' => 1,
+    'SWOOLE_PROCESS' => 2,
 ] as $name => $value) {
     if (!defined($name)) {
         define($name, $value);
