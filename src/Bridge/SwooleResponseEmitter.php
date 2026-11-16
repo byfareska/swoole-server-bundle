@@ -35,11 +35,20 @@ final readonly class SwooleResponseEmitter
             if (!\is_string($name) || !is_iterable($values)) {
                 continue;
             }
+            $list = [];
             foreach ($values as $value) {
                 if (\is_scalar($value) || $value instanceof \Stringable) {
-                    $res->header($name, (string) $value);
+                    $list[] = (string) $value;
                 }
             }
+            // One call per header name: Swoole overwrites a repeated key, so a
+            // multi-value header (Link, Vary, WWW-Authenticate...) is passed as
+            // an array, which Swoole emits as separate header lines.
+            match (\count($list)) {
+                0 => null,
+                1 => $res->header($name, $list[0]),
+                default => $res->header($name, $list),
+            };
         }
 
         foreach ($response->headers->getCookies() as $cookie) {

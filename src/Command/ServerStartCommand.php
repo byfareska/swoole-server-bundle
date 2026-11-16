@@ -69,11 +69,17 @@ final class ServerStartCommand extends Command
         // Declare explicitly: this process serves web traffic in long-running workers.
         $_SERVER['APP_RUNTIME_MODE'] = $_ENV['APP_RUNTIME_MODE'] = 'web=1&worker=1';
 
-        $server = new Server($dsn->host, $dsn->port);
+        $server = new Server($dsn->host, $dsn->port, $dsn->swooleMode());
         $server->set([
             // No coroutines: requests within a worker are serialized because they
             // share a single kernel (one Doctrine connection, one identity map).
             'enable_coroutine' => false,
+            // PROCESS mode: hand every request to an IDLE worker. The fd-based
+            // default (2) pins a keep-alive connection to one worker, so a busy
+            // worker queues requests while others idle — and behind a proxy's
+            // keep-alive pool most workers would never get traffic. BASE mode
+            // has no dispatcher, the option does not apply there.
+            ...(ServerDsn::MODE_PROCESS === $dsn->mode ? ['dispatch_mode' => 3] : []),
             'http_compression' => false,
             'max_request' => 0,          // no worker recycling (long-lived connections)
             // Max size of a single request — Swoole (not PHP ini) limits uploads,
@@ -158,7 +164,7 @@ final class ServerStartCommand extends Command
             $this->hotReloadWatcher->attach($server, $output);
         }
 
-        $io->success(\sprintf('HTTP Server (Swoole) is listening on %s:%d', $dsn->host, $dsn->port));
+        $io->success(\sprintf('HTTP Server (Swoole) is listening on %s:%d (%s mode)', $dsn->host, $dsn->port, $dsn->mode));
 
         $server->start();
 

@@ -35,6 +35,23 @@ final class SwooleResponseEmitterTest extends TestCase
         self::assertTrue($res->ended);
     }
 
+    public function testMultiValueHeaderKeepsEveryValue(): void
+    {
+        $res = new \Swoole\Http\Response();
+        $response = new Response('', 200, [
+            'Link' => ['</a.css>; rel=preload', '</b.js>; rel=preload'],
+            'X-Single' => 'one',
+        ]);
+
+        $this->createEmitter()->emit($response, $res);
+
+        // Swoole overwrites a repeated header() key — all values must go in one call.
+        self::assertContains(['Link', ['</a.css>; rel=preload', '</b.js>; rel=preload']], $res->headerCalls);
+        self::assertContains(['Link', '</a.css>; rel=preload'], $res->headers);
+        self::assertContains(['Link', '</b.js>; rel=preload'], $res->headers);
+        self::assertContains(['X-Single', 'one'], $res->headerCalls);
+    }
+
     public function testEmitsCookies(): void
     {
         $res = new \Swoole\Http\Response();

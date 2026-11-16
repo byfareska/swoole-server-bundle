@@ -130,6 +130,43 @@ final class ServerDsnTest extends TestCase
         yield 'empty' => [''];
     }
 
+    public function testModeDefaultsToProcess(): void
+    {
+        $dsn = ServerDsn::fromString('swoole://h:1?workers=2');
+
+        self::assertSame(ServerDsn::MODE_PROCESS, $dsn->mode);
+        self::assertSame(SWOOLE_PROCESS, $dsn->swooleMode());
+    }
+
+    #[DataProvider('provideModes')]
+    public function testModeIsParsedAndKeptOutOfSettings(string $value, string $expected, int $swooleMode): void
+    {
+        $dsn = ServerDsn::fromString('swoole://h:1?mode=' . $value);
+
+        self::assertSame($expected, $dsn->mode);
+        self::assertSame($swooleMode, $dsn->swooleMode());
+        // It selects the Server constructor argument, $server->set() does not know it.
+        self::assertSame([], $dsn->settings);
+    }
+
+    /**
+     * @return iterable<string, array{string, string, int}>
+     */
+    public static function provideModes(): iterable
+    {
+        yield 'process' => ['process', ServerDsn::MODE_PROCESS, SWOOLE_PROCESS];
+        yield 'base' => ['base', ServerDsn::MODE_BASE, SWOOLE_BASE];
+        yield 'case-insensitive' => ['BASE', ServerDsn::MODE_BASE, SWOOLE_BASE];
+    }
+
+    public function testInvalidModeThrows(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Invalid "mode"');
+
+        ServerDsn::fromString('swoole://h:1?mode=thread');
+    }
+
     public function testWorkerNumParameterIsRejectedWithAHint(): void
     {
         $this->expectException(\InvalidArgumentException::class);
