@@ -73,6 +73,8 @@ swoole://HOST:PORT?workers=N&<any_swoole_options>
   (`512M`, `2G`, `536870912`, `-1` = unlimited); absent = whatever the
   `bin/console` process has, which in the CLI SAPI is usually `-1`. See
   [Worker memory limit](#worker-memory-limit) below.
+- `mode` — Swoole server mode: `process` (default) or `base`. See
+  [Server mode](#server-mode) below.
 - **every other query parameter** goes 1:1 to `$server->set()` — e.g.
   `package_max_length=134217728`, `log_level=warning` (level names are mapped
   to the `SWOOLE_LOG_*` constants), `http_compression=true`
@@ -83,11 +85,42 @@ Default server settings (overridable via the DSN):
 | option | value | why |
 | --- | --- | --- |
 | `enable_coroutine` | `false` | requests within a worker are serialized — they share one kernel |
+| `dispatch_mode` | `3` (`process` mode only) | every request goes to an idle worker — see [Server mode](#server-mode) |
 | `http_compression` | `false` | — |
 | `max_request` | `0` | no worker recycling (long-lived connections) |
 | `package_max_length` | 64 MB | the upload limit is enforced by Swoole, not PHP ini |
 | `output_buffer_size` | 64 MB | Swoole's own default (2 MB) aborts larger buffered responses with a warning |
 | `log_level` | `SWOOLE_LOG_INFO` | — |
+
+### Server mode
+
+Workers are blocking — one request at a time — so what matters is which
+worker gets the next request.
+
+- **`process` (default, `SWOOLE_PROCESS`)** — the master's reactor threads
+  accept connections and hand every request to a worker; with the default
+  `dispatch_mode=3` that is an **idle** worker, the way PHP-FPM hands requests
+  to free children.
+- **`base` (`SWOOLE_BASE`, Swoole's own default)** — each worker accepts
+  connections itself and a keep-alive connection stays with the worker that
+  accepted it. A burst of connections tends to land on one worker while the
+  others idle, and a slow request blocks every other request queued on its
+  connection's worker. Behind a reverse proxy that keeps a small pool of
+  keep-alive connections (nginx `keepalive`) most workers may never see
+  traffic. It saves one IPC hop per request (~50 µs), so it can make sense
+  for a single worker or short-lived connections.
+
+Measured on symfony/demo (4 workers, keep-alive, `/en/blog/`):
+
+| | 4 connections | 8 connections |
+| --- | --- | --- |
+| `mode=base` | 350–970 rps, p50 3–10.6 ms (varies with how connections land) | 665–1000 rps |
+| `mode=process` (`dispatch_mode=3`) | ~1150 rps, p50 3.2 ms | ~1200 rps |
+
+`dispatch_mode` stays overridable through the DSN (e.g. `dispatch_mode=2` for
+fd-based stickiness). When every worker is busy, Swoole queues the request on
+a busy worker rather than in a shared queue, so a request can wait behind a
+slow one — size `workers` for your peak concurrency of slow requests.
 
 ### Worker memory limit
 
@@ -191,6 +224,78 @@ Useful alerts: `worker_memory_rss_bytes / php_memory_limit_bytes > 0.7`,
 `increase(worker_restarts_total[15m]) > 0`,
 `predict_linear(worker_memory_rss_bytes[2h], 6*3600) > php_memory_limit_bytes`.
 
+## Static files: put nginx in front
+
+Swoole does not serve files from `public/` — out of the box a request for
+`/assets/app-1a2b3c.css` goes to a worker and ends as a Symfony 404. In
+production, **run a reverse proxy (nginx) that serves a file when it exists on
+disk and forwards only the remaining requests to Swoole**. A static file then
+never occupies a worker: workers handle one request at a time, so every asset
+they serve is a PHP request that does not get served.
+
+```nginx
+upstream swoole {
+    server 127.0.0.1:8000;
+    keepalive 32;               # reuse connections to Swoole
+}
+
+server {
+    listen 80;
+    server_name example.com;
+    root /var/www/app/public;   # the same public/ the application uses
+
+    # The file exists → nginx sends it; otherwise → Swoole.
+    location / {
+        try_files $uri @swoole;
+    }
+
+    # Fingerprinted AssetMapper/Encore files never change under the same URL.
+    location /assets/ {
+        try_files $uri @swoole;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        access_log off;
+    }
+
+    # Never hand out PHP sources as static files.
+    location ~ \.php$ {
+        return 404;
+    }
+
+    location @swoole {
+        proxy_pass http://swoole;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
+    }
+}
+```
+
+- nginx needs the built assets on its own filesystem: run
+  `php bin/console asset-map:compile` (or your Encore build) at deploy time and
+  share `public/` with the nginx container (volume or a copy in its image).
+- Keep nginx's default `proxy_buffering on`: nginx reads the response from the
+  worker at full speed and trickles it to slow clients itself, so the worker
+  is free for the next request. For SSE/streamed responses send
+  `X-Accel-Buffering: no` from the response to turn buffering off per request.
+- Configure trusted proxies (next section), otherwise Symfony sees the proxy's
+  IP and plain HTTP.
+
+Without a proxy (local development, a quick demo) Swoole's built-in static
+handler can fill the gap — the DSN passes the options through:
+
+```dotenv
+SWOOLE_SERVER_DSN=swoole://0.0.0.0:8000?workers=2&enable_static_handler=true&document_root=/var/www/app/public
+```
+
+Treat it as a fallback, not the production setup: it has no per-location cache
+headers, no buffering for slow clients, and the files are sent by the same
+Swoole processes that should be busy with PHP traffic.
+(`.php` files are not served by it — they fall through to the kernel.)
+
 ## Behind a reverse proxy (trusted proxies)
 
 The bridge builds the `Request` from raw Swoole data, so behind nginx/traefik
@@ -209,7 +314,7 @@ framework:
 
 In debug mode a watcher (mtime polling — works also on Docker Desktop/macOS
 volumes, where inotify does not receive events from the host) scans
-`watch_dirs` and on any change **stops the whole server** (`$server->stop()`)
+`watch_dirs` and on any change **stops the whole server** (`$server->shutdown()`)
 — docker's/supervisor's restart policy brings up a fresh process, so the code
 is guaranteed to come up new. A graceful `$server->reload()` is deliberately
 not used: with 1 worker it does not work at all (ERRNO 507), and in debug a
