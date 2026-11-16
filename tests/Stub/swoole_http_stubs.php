@@ -51,9 +51,26 @@ if (!class_exists(Response::class, false)) {
             return true;
         }
 
-        public function header(string $key, string $value): bool
+        /** @var list<array{string, string|list<string>}> raw header() calls */
+        public array $headerCalls = [];
+
+        /**
+         * Like ext-swoole: an array value emits one header line per element,
+         * while a repeated call with the same key overwrites the previous one —
+         * $headers keeps only the lines that would reach the client.
+         *
+         * @param string|list<string> $value
+         */
+        public function header(string $key, string|array $value, bool $format = true): bool
         {
-            $this->headers[] = [$key, $value];
+            $this->headerCalls[] = [$key, $value];
+            $this->headers = array_values(array_filter(
+                $this->headers,
+                static fn (array $h): bool => 0 !== strcasecmp($h[0], $key),
+            ));
+            foreach ((array) $value as $v) {
+                $this->headers[] = [$key, $v];
+            }
 
             return true;
         }
